@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Шутер на 2: Фикс автоприцела</title>
+  <style>
+    body { margin:0; background:#0f0f0f; color:#eee; font-family:'Segoe UI',system-ui,sans-serif; display:flex; flex-direction:column; align-items:center; height:100vh; overflow:hidden; }
+    #game-wrapper { position:relative; margin-top:10px; }
+    canvas { background:#181818; border:3px solid #2a2a2a; box-shadow:0 0 25px rgba(0,0,0,0.8); display:block; border-radius:8px; }
+    #ui { display:flex; justify-content:space-between; width:800px; padding:8px 20px; box-sizing:border-box; }
+    .player-info { width:48%; }
+    .bar-wrap { background:#1a1a1a; height:8px; border-radius:4px; margin:4px 0 2px; border:1px solid #333; position:relative; }
+    .bar { height:100%; border-radius:4px; transition:width 0.1s ease; }
+    #p1-hp { background:#4CAF50; } #p2-hp { background:#F44336; }
+    #p1-dash { background:#2196F3; } #p2-dash { background:#FF9800; }
+    .label { display:flex; justify-content:space-between; font-size:13px; margin-bottom:1px; }
+    .weapon { font-weight:600; opacity:0.9; }
+    .dash-text { font-size:11px; color:#888; }
+    #status { position:absolute; top:45%; left:50%; transform:translate(-50%,-50%); font-size:22px; font-weight:bold; color:#FFD700; text-shadow:0 0 6px rgba(0,0,0,0.8); pointer-events:none; opacity:0; transition:opacity 0.3s; }
+    #status.show { opacity:1; }
+    #menu { position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(15,15,15,0.92); display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:10; border-radius:8px; }
+    #menu h1 { color:#FFD700; margin:0 0 20px; text-shadow:0 0 8px rgba(255,215,0,0.4); }
+    .btn { width:260px; padding:14px; margin:8px 0; background:#2a2a2a; border:2px solid #444; color:#fff; font-size:16px; cursor:pointer; border-radius:8px; transition:0.2s; }
+    .btn:hover { background:#3a3a3a; transform:translateY(-2px); }
+    .btn.pvp { border-left:4px solid #4CAF50; }
+    .btn.pve { border-left:4px solid #F44336; }
+    .info { margin-top:15px; font-size:12px; color:#666; text-align:center; line-height:1.6; }
+    .hidden { display:none!important; }
+  </style>
+</head>
+<body>
+  <div id="game-wrapper">
+    <div id="ui">
+      <div class="player-info">
+        <div class="label"><span>🟢 Игрок 1</span><span class="dash-text">Рывок: Q</span></div>
+        <div class="bar-wrap"><div id="p1-hp" class="bar" style="width:100%"></div></div>
+        <div class="bar-wrap"><div id="p1-dash" class="bar" style="width:100%"></div></div>
+        <div class="weapon" id="p1-weapon">🔫 Пистолет</div>
+      </div>
+      <div class="player-info">
+        <div class="label"><span id="p2-label">🔴 Игрок 2</span><span class="dash-text">Рывок: E</span></div>
+        <div class="bar-wrap"><div id="p2-hp" class="bar" style="width:100%"></div></div>
+        <div class="bar-wrap"><div id="p2-dash" class="bar" style="width:100%"></div></div>
+        <div class="weapon" id="p2-weapon">🔫 Пистолет</div>
+      </div>
+    </div>
+    <canvas id="game" width="800" height="500"></canvas>
+    <div id="status"></div>
+    <div id="menu">
+      <h1>🎮 ШУТЕР НА ДВОИХ</h1>
+      <button class="btn pvp" onclick="startGame('pvp')">👥 Игрок vs Игрок</button>
+      <button class="btn pve" onclick="startGame('pve')">🤖 Игрок vs Бот</button>
+      <div class="info">
+        WASD + ПРОБЕЛ | Стрелки + ENTER<br>
+        Q / E — Рывок | 1-3 / 4-6 — Оружие<br>
+        F — Автоприцел (ВКЛ по умолчанию)
+      </div>
+    </div>
+  </div>
+
+<script>
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const menuEl = document.getElementById('menu');
+  const statusEl = document.getElementById('status');
+  const p2Label = document.getElementById('p2-label');
+  
+  const keys = {};
+  let state = 'menu';
+  let gameMode = 'pve';
+  let autoAim = true; // ✅ ВКЛ по умолчанию
+  let lastTime = 0;
+  let players = [], bullets = [];
+
+  // 🧱 КАРТА
+  const WALLS = [
+    {x:0,y:0,w:800,h:12},{x:0,y:488,w:800,h:12},{x:0,y:0,w:12,h:500},{x:788,y:0,w:12,h:500},
+    {x:340,y:220,w:120,h:14},{x:340,y:266,w:120,h:14},{x:393,y:220,w:14,h:60},
+    {x:180,y:120,w:16,h:90},{x:180,y:290,w:16,h:90},{x:120,y:160,w:60,h:16},{x:120,y:324,w:60,h:16},
+    {x:604,y:120,w:16,h:90},{x:604,y:290,w:16,h:90},{x:620,y:160,w:60,h:16},{x:620,y:324,w:60,h:16},
+    {x:60,y:60,w:80,h:80},{x:660,y:60,w:80,h:80},{x:60,y:360,w:80,h:80},{x:660,y:360,w:80,h:80}
+  ];
+
+  // 🔫 ОРУЖИЕ
+  const WEAPONS = [
+    {name:'Пистолет', dmg:12, cd:250, spd:9, cnt:1, spr:0, col:'#FFD700'},
+    {name:'Дробовик', dmg:8, cd:700, spd:7, cnt:6, spr:0.3, col:'#FF9800'},
+    {name:'Автомат', dmg:4, cd:90, spd:14, cnt:1, spr:0.08, col:'#2196F3'}
+  ];
+
+  // 🖱️ ВВОД
+  window.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    if (e.code === 'KeyF' && state === 'playing') autoAim = !autoAim;
+    if (state === 'menu' && (e.code === 'Digit1' || e.code === 'Digit2')) startGame(e.code === 'Digit1' ? 'pvp' : 'pve');
+    if (state === 'gameover' && e.code === 'Space') startGame(gameMode);
+  });
+  window.addEventListener('keyup', e => keys[e.code] = false);
+
+  function rectIntersect(r1, r2) {
+    return !(r2.x >= r1.x + r1.w || r2.x + r2.w <= r1.x || r2.y >= r1.y + r1.h || r2.y + r2.h <= r1.y);
+  }
+
+  function lineHitsWall(x1,y1,x2,y2) {
+    let steps = Math.max(1, Math.hypot(x2-x1, y2-y1) / 8);
+    for(let i=0;i<=steps;i++){
+      let t=i/steps, cx=x1+(x2-x1)*t, cy=y1+(y2-y1)*t;
+      if(WALLS.some(w=>cx>=w.x && cx<=w.x+w.w && cy>=w.y && cy<=w.y+w.h)) return true;
+    }
+    return false;
+  }
+
+  // 🎯 ПУЛЯ С ИСПРАВЛЕННЫМ АВТОПРИЦЕЛОМ
+  class Bullet {
+    constructor(x,y,angle,spd,dmg,owner,col){
+      this.x=x; this.y=y; this.angle=angle; this.spd=spd; this.dmg=dmg;
+      this.owner=owner; this.col=col; this.r=3.5; this.life=140;
+      this.target=null; this.aimTime=0;
+      
+      // ✅ Фикс: радиус поиска 750px (покрывает всю карту) + плавный доворот
+      if(autoAim) {
+        let bestD=750, target=null;
+        players.forEach(p=>{
+          if(p.name!==owner){
+            let d=Math.hypot((p.x+p.w/2)-x, (p.y+p.h/2)-y);
+            if(d<bestD){bestD=d; target=p;}
+          }
+        });
+        if(target) { this.target=target; this.aimTime=60; } // 1 секунда коррекции
+      }
+    }
+    update(){
+      if(this.target && this.aimTime>0){
+        if(this.target.hp<=0) this.target=null;
+        if(this.target){
+          let tx=this.target.x+this.target.w/2, ty=this.target.y+this.target.h/2;
+          let targetAngle=Math.atan2(ty-this.y, tx-this.x);
+          let diff=Math.atan2(Math.sin(targetAngle-this.angle), Math.cos(targetAngle-this.angle));
+          
+          // ✅ Плавный поворот без рывков
+          let turn=Math.min(Math.abs(diff), 0.18)*Math.sign(diff);
+          this.angle+=turn;
+          this.aimTime--;
+        }
+      }
+      this.x+=Math.cos(this.angle)*this.spd;
+      this.y+=Math.sin(this.angle)*this.spd;
+      this.life--;
+    }
+    draw(){
+      // Визуальный индикатор доворота
+      if(this.aimTime>0 && this.target){
+        ctx.strokeStyle='rgba(255,255,255,0.4)'; ctx.lineWidth=1.5;
+        ctx.beginPath(); ctx.arc(this.x,this.y,this.r+2,0,Math.PI*2); ctx.stroke();
+      }
+      ctx.shadowColor=this.col; ctx.shadowBlur=6;
+      ctx.fillStyle=this.col;
+      ctx.beginPath(); ctx.arc(this.x,this.y,this.r,0,Math.PI*2); ctx.fill();
+      ctx.shadowBlur=0;
+    }
+    hitsWall(){
+      let r={x:this.x-this.r, y:this.y-this.r, w:this.r*2, h:this.r*2};
+      return WALLS.some(w=>rectIntersect(r,w));
+    }
+  }
+
+  // 🧍 ИГРОК / БОТ
+  class Player {
+    constructor(x,y,col,name,isBot=false){
+      this.x=x; this.y=y; this.w=28; this.h=28; this.col=col; this.name=name; this.isBot=isBot;
+      this.hp=100; this.speed=4.5; this.wIdx=0; this.lastShot=0;
+      this.fx=1; this.fy=0; this.dashCD=0; this.dashDur=0; this.isDashing=false;
+      this.dir=[0,0]; this.invincible=false; this.trail=[];
+      this.botState='chase'; this.botTimer=0;
+    }
+    shoot(t){
+      let w=WEAPONS[this.wIdx];
+      if(t-this.lastShot<w.cd) return [];
+      let ang=Math.atan2(this.fy,this.fx);
+      let start=ang-((w.cnt-1)*w.spr)/2;
+      let res=[];
+      for(let i=0;i<w.cnt;i++){
+        let a=start+i*w.spr;
+        res.push(new Bullet(this.x+this.w/2, this.y+this.h/2, a, w.spd, w.dmg, this.name, w.col));
+      }
+      this.lastShot=t; return res;
+    }
+    dash(){
+      if(this.dashCD<=0 && !this.isDashing){
+        this.isDashing=true; this.dashDur=140; this.dashCD=2000; this.invincible=true;
+        this.dir=[this.fx||1, this.fy||0]; let l=Math.hypot(...this.dir);
+        this.dir=[this.dir[0]/l, this.dir[1]/l]; this.trail=[];
+      }
+    }
+    updateDash(dt){
+      if(this.isDashing){
+        this.dashDur-=dt; this.x+=this.dir[0]*14*(dt/16); this.y+=this.dir[1]*14*(dt/16);
+        this.x=Math.max(12, Math.min(800-12-this.w, this.x));
+        this.y=Math.max(12, Math.min(500-12-this.h, this.y));
+        this.trail.push({x:this.x, y:this.y, a:0.7});
+        if(this.trail.length>6) this.trail.shift();
+        if(this.dashDur<=0){this.isDashing=false; this.invincible=false;}
+      } else {
+        this.dashCD=Math.max(0, this.dashCD-dt); this.trail=[];
+      }
+    }
+    move(dx,dy){
+      if(this.isDashing) return;
+      let l=Math.hypot(dx,dy); if(l===0) return;
+      let mx=(dx/l)*this.speed, my=(dy/l)*this.speed;
+      this.x+=mx; this.x=Math.max(12, Math.min(800-12-this.w, this.x));
+      if(WALLS.some(w=>rectIntersect({x:this.x,y:this.y,w:this.w,h:this.h},w))) this.x-=mx;
+      this.y+=my; this.y=Math.max(12, Math.min(500-12-this.h, this.y));
+      if(WALLS.some(w=>rectIntersect({x:this.x,y:this.y,w:this.w,h:this.h},w))) this.y-=my;
+    }
+    draw(){
+      this.trail.forEach((t,i)=>{
+        ctx.globalAlpha=t.a*(i/this.trail.length);
+        ctx.fillStyle=this.col; ctx.fillRect(t.x,t.y,this.w,this.h);
+      }); ctx.globalAlpha=1;
+      if(this.invincible){ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.strokeRect(this.x,this.y,this.w,this.h);}
+      ctx.shadowColor=this.col; ctx.shadowBlur=10; ctx.fillStyle=this.col; ctx.fillRect(this.x,this.y,this.w,this.h); ctx.shadowBlur=0;
+      ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(this.x+this.w/2+this.fx*10, this.y+this.h/2+this.fy*10, 3, 0, Math.PI*2); ctx.fill();
+      if(this.isBot){ctx.font='10px Arial'; ctx.fillStyle='#FFD700'; ctx.fillText('🤖', this.x+8, this.y-4);}
+    }
+  }
+
+  // 🤖 ИИ БОТА
+  function botAI(bot, target, t, dt){
+    if(!bot.isBot) return [];
+    let dx=target.x+target.w/2-(bot.x+bot.w/2), dy=target.y+target.h/2-(bot.y+bot.h/2);
+    let dist=Math.hypot(dx,dy), ang=Math.atan2(dy,dx);
+    bot.botTimer-=dt;
+    if(bot.botTimer<=0){
+      bot.botTimer=80+Math.random()*120;
+      bot.fx=Math.cos(ang); bot.fy=Math.sin(ang);
+      bot.wIdx=dist<150?1:(dist<400?2:0);
+      let los=!lineHitsWall(bot.x+bot.w/2, bot.y+bot.h/2, target.x+target.w/2, target.y+bot.h/2);
+      bot.botState=(los && dist<500)?'attack':(dist<100?'retreat':'chase');
+      if(bot.dashCD<=0 && Math.random()<0.25 && dist<200 && los){
+        bot.dash(); bot.dir=[-bot.fx, -bot.fy]; let l=Math.hypot(...bot.dir); bot.dir=[bot.dir[0]/l, bot.dir[1]/l];
+      }
+    }
+    if(bot.isDashing) return [];
+    let mx=0, my=0;
+    if(bot.botState==='chase'){mx=Math.cos(ang); my=Math.sin(ang);}
+    else if(bot.botState==='retreat'){mx=-Math.cos(ang); my=-Math.sin(ang);}
+    else{mx=-Math.sin(ang); my=Math.cos(ang); if(Math.random()<0.5){mx*=-1; my*=-1;}}
+    bot.move(mx,my);
+    if(!lineHitsWall(bot.x+bot.w/2, bot.y+bot.h/2, target.x+target.w/2, target.y+target.h/2) && dist<550 && t-bot.lastShot > WEAPONS[bot.wIdx].cd*(0.7+Math.random()*0.5))
+      return bot.shoot(t);
+    return [];
+  }
+
+  function startGame(mode){
+    gameMode=mode; state='playing';
+    menuEl.classList.add('hidden'); statusEl.classList.remove('show');
+    p2Label.textContent = mode==='pve' ? '🤖 БОТ' : '🔴 Игрок 2';
+    players=[
+      new Player(80,250,'#4CAF50','P1'),
+      new Player(692,250,'#F44336','P2', mode==='pve')
+    ];
+    bullets=[];
+    updateUI();
+  }
+
+  function updateUI(){
+    document.getElementById('p1-hp').style.width=players[0].hp+'%';
+    document.getElementById('p2-hp').style.width=players[1].hp+'%';
+    document.getElementById('p1-dash').style.width=(players[0].dashCD<=0?100:(100-players[0].dashCD/20))+'%';
+    document.getElementById('p2-dash').style.width=(players[1].dashCD<=0?100:(100-players[1].dashCD/20))+'%';
+    document.getElementById('p1-weapon').textContent='🔫 '+WEAPONS[players[0].wIdx].name;
+    document.getElementById('p1-weapon').style.color=WEAPONS[players[0].wIdx].col;
+    document.getElementById('p2-weapon').textContent='🔫 '+WEAPONS[players[1].wIdx].name;
+    document.getElementById('p2-weapon').style.color=WEAPONS[players[1].wIdx].col;
+  }
+
+  function gameLoop(time){
+    let dt=Math.min(time-lastTime, 33.3); lastTime=time;
+    if(state==='playing'){
+      let p1dx=(keys['KeyD']?1:0)-(keys['KeyA']?1:0), p1dy=(keys['KeyS']?1:0)-(keys['KeyW']?1:0);
+      if(p1dx||p1dy){players[0].fx=p1dx; players[0].fy=p1dy;}
+      players[0].move(p1dx, p1dy);
+      if(keys['KeyQ']) players[0].dash();
+      if(keys['Space']) bullets.push(...players[0].shoot(time));
+
+      if(gameMode==='pvp'){
+        let p2dx=(keys['ArrowRight']?1:0)-(keys['ArrowLeft']?1:0), p2dy=(keys['ArrowDown']?1:0)-(keys['ArrowUp']?1:0);
+        if(p2dx||p2dy){players[1].fx=p2dx; players[1].fy=p2dy;}
+        players[1].move(p2dx, p2dy);
+        if(keys['KeyE']) players[1].dash();
+        if(keys['Enter']) bullets.push(...players[1].shoot(time));
+      } else {
+        bullets.push(...botAI(players[1], players[0], time, dt));
+      }
+
+      if(keys['Digit1']) players[0].wIdx=0; if(keys['Digit2']) players[0].wIdx=1; if(keys['Digit3']) players[0].wIdx=2;
+      if(gameMode==='pvp'){if(keys['Digit4']) players[1].wIdx=0; if(keys['Digit5']) players[1].wIdx=1; if(keys['Digit6']) players[1].wIdx=2;}
+
+      players.forEach(p=>p.updateDash(dt));
+      for(let i=bullets.length-1;i>=0;i--){
+        let b=bullets[i]; b.update();
+        if(b.life<=0 || b.hitsWall() || b.x<0 || b.x>800 || b.y<0 || b.y>500){bullets.splice(i,1); continue;}
+        for(let p of players){
+          if(b.owner===p.name || p.invincible) continue;
+          if(b.x>p.x && b.x<p.x+p.w && b.y>p.y && b.y<p.y+p.h){
+            p.hp=Math.max(0, p.hp-b.dmg); bullets.splice(i,1);
+            if(p.hp===0){
+              state='gameover';
+              let winName = p.name==='P1' ? (gameMode==='pve'?'🤖 БОТ':'🔴 Игрок 2') : '🟢 Игрок 1';
+              statusEl.textContent=winName+' победил! ПРОБЕЛ - рестарт';
+              statusEl.classList.add('show');
+            }
+            break;
+          }
+        }
+      }
+      updateUI();
+    }
+
+    ctx.clearRect(0,0,800,500);
+    ctx.strokeStyle='#222'; ctx.lineWidth=1;
+    for(let x=0;x<800;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,500);ctx.stroke();}
+    for(let y=0;y<500;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(800,y);ctx.stroke();}
+    WALLS.forEach(w=>{ctx.fillStyle='#2a2a2a';ctx.fillRect(w.x,w.y,w.w,w.h);ctx.strokeStyle='#3a3a3a';ctx.lineWidth=2;ctx.strokeRect(w.x+1,w.y+1,w.w-2,w.h-2);});
+    players.forEach(p=>p.draw());
+    bullets.forEach(b=>b.draw());
+    
+    ctx.fillStyle=autoAim?'#2196F3':'#666'; ctx.font='bold 12px monospace';
+    ctx.fillText(autoAim?'🎯 АВТО: ВКЛ [F]':'🎯 АВТО: ВЫКЛ [F]', 340, 18);
+
+    requestAnimationFrame(gameLoop);
+  }
+
+  requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
